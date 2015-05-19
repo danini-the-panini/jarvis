@@ -1,100 +1,111 @@
 #!/usr/bin/env ruby
 
-ARTICLES = ['a', 'the', 'an']
+require 'json'
 
-$actions = {}
+begin
+  FILENAME = 'actions.json'.freeze
+  ARTICLES = ['a', 'the', 'an']
+  $actions = File.exists?(FILENAME) ? JSON.parse(File.read(FILENAME)) : {}
 
-def say(text)
-  puts
-  puts "\t#{text}"
-  puts
-  `say #{text}`
-end
+  def say(text)
+    puts
+    puts "\t#{text}"
+    puts
+    `say #{text}`
+  end
 
-def remove_articles words
-  ARTICLES.each { |article| words.delete article }
-end
+  def remove_articles words
+    ARTICLES.each { |article| words.delete article }
+  end
 
-def prepare_sentence sentence
-  words = sentence.chomp.downcase.split(' ')
-  remove_articles words
-  words
-end
+  def prepare_sentence sentence
+    words = sentence.chomp.downcase.split(' ')
+    remove_articles words
+    words
+  end
 
-def map_actions(result)
+  def map_actions(result)
+    loop do
+      say "What do you mean by #{result[:rest_of_words].join " "}?"
+      print '> '
+      intent = gets
+      phrase, mapping = intent.split('means').map(&:strip)
+      phrase = prepare_sentence(phrase)
+      phrase.each { |w| result[:rest_of_words].shift }
+      result[:context] = result[:context][phrase.join ' '] = { :action => mapping }
+      result[:action].push mapping
+      return result[:context] if result[:rest_of_words].empty?
+    end
+  end
+
+  def find_action(words, context = $actions, action = [])
+    cloned_words = words.clone
+    rest_of_words = []
+    found_context = nil
+    loop do
+      break if cloned_words.empty?
+      found_context = context[cloned_words.join ' ']
+      break if !found_context.nil?
+      rest_of_words.unshift cloned_words.pop
+    end
+
+    action.push found_context[:action] unless found_context.nil?
+
+    return find_action(rest_of_words, found_context || context, action) if !found_context.nil? && !rest_of_words.empty?
+    return { :context => found_context || context, :rest_of_words => rest_of_words, :action => action }
+  end
+
+  def get_action(action)
+    command = nil
+    arguments = []
+    directory = nil
+    action.each do |a|
+      command = a[5..-1] if a.start_with?('exec:')
+      arguments.push(a[4..-1]) if a.start_with?('arg:')
+      directory = a[4..-1] if a.start_with?('dir:')
+    end
+    { command: "#{command} #{arguments.join ' '}", directory: directory }
+  end
+
+  def do_action(action)
+    parsed_action = get_action(action)
+    command = parsed_action[:command]
+    directory = parsed_action[:directory]
+    if !command.nil?
+      response = "Running shell command '#{command}'"
+      response += " in directory '#{directory}'" unless directory.nil?
+      say response
+
+      if directory.nil?
+        system command
+      else
+        system "cd #{File.expand_path(directory)} && #{command}"
+      end
+    end
+  end
+
+  say "Welcome, sir. What can I do to make you more comfortable?"
+
   loop do
-    say "What do you mean by #{result[:rest_of_words].join " "}?"
     print '> '
-    intent = gets
-    phrase, mapping = intent.split('means').map(&:strip)
-    phrase = prepare_sentence(phrase)
-    phrase.each { |w| result[:rest_of_words].shift }
-    result[:context] = result[:context][phrase.join ' '] = { :action => mapping }
-    result[:action].push mapping
-    return result[:context] if result[:rest_of_words].empty?
-  end
-end
+    input = gets.chomp
+    words = prepare_sentence(input)
+    result = find_action(words)
+    known_request = result[:rest_of_words].empty?
+    if !known_request
+      map_actions(result)
+      parsed_action = get_action(result[:action])
 
-def find_action(words, context = $actions, action = [])
-  cloned_words = words.clone
-  rest_of_words = []
-  found_context = nil
-  loop do
-    break if cloned_words.empty?
-    found_context = context[cloned_words.join ' ']
-    break if !found_context.nil?
-    rest_of_words.unshift cloned_words.pop
+      response = "Now I know that '#{input}' means running '#{parsed_action[:command]}'"
+      response += " in directory '#{parsed_action[:directory]}'" unless parsed_action[:directory].nil?
+      say response
+    else
+      do_action result[:action]
+    end
+    say "Anything else?"
   end
 
-  action.push found_context[:action] unless found_context.nil?
-
-  return find_action(rest_of_words, found_context || context, action) if !found_context.nil? && !rest_of_words.empty?
-  return { :context => found_context || context, :rest_of_words => rest_of_words, :action => action }
-end
-
-def get_action(action)
-  command = nil
-  arguments = []
-  directory = nil
-  action.each do |a|
-    command = a[5..-1] if a.start_with?('exec:')
-    arguments.push(a[4..-1]) if a.start_with?('arg:')
-    directory = a[4..-1] if a.start_with?('dir:')
-  end
-  { command: "#{command} #{arguments.join ' '}", directory: directory }
-end
-
-def do_action(action)
-  parsed_action = get_action(action)
-  command = parsed_action[:command]
-  directory = parsed_action[:directory]
-  if !command.nil?
-    response = "Running shell command '#{command}'"
-    response += " in directory '#{directory}'" unless directory.nil?
-    say response
-
-    Dir.chdir directory unless directory.nil?
-    `#{command}`
-  end
-end
-
-say "Welcome, sir. What can I do to make you more comfortable?"
-
-loop do
-  print '> '
-  input = gets.chomp
-  words = prepare_sentence(input)
-  result = find_action(words)
-  known_request = result[:rest_of_words].empty?
-  if !known_request
-    map_actions(result)
-    parsed_action = get_action(result[:action])
-
-    response = "Now I know that '#{input}' means running '#{parsed_action[:command]}'"
-    response += " in directory '#{parsed_action[:directory]}'" unless parsed_action[:directory].nil?
-    say response
-  else
-    do_action result[:action]
-  end
-  say "Anything else?"
+rescue Interrupt
+  say "Good night, sir."
+  File.write('actions.json', $actions.to_json)
 end
